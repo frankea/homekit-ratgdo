@@ -892,28 +892,31 @@ void comms_loop_sec2()
 
             case PacketCommand::Pair3Resp:
             {
-                // Use Pair3Resp packets for obstruction detection via parity
-                // Parity 3 = clear, Parity 4 = obstructed
-                uint8_t parity = pkt.m_data.value.no_data.parity;
-                bool currently_obstructed = (parity == 4);
-                
-                // Only update if obstruction state has changed
-                if (garage_door.obstructed != currently_obstructed)
-                {
-                    garage_door.obstructed = currently_obstructed;
-                    RINFO("Obstruction %s (Pair3Resp parity %d)", 
-                          currently_obstructed ? "Detected" : "Clear", parity);
+                // Only use Pair3Resp for obstruction detection if pin-based detection isn't working
+                if (!pin_obstruction_available) {
+                    // Use Pair3Resp packets for obstruction detection via parity
+                    // Parity 3 = clear, Parity 4 = obstructed
+                    uint8_t parity = pkt.m_data.value.no_data.parity;
+                    bool currently_obstructed = (parity == 4);
                     
-                    // Notify HomeKit of the state change
-                    notify_homekit_obstruction();
-                    digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
-                    
-                    // Trigger motion detection if enabled
-                    if (motionTriggers.bit.obstruction)
+                    // Only update if obstruction state has changed
+                    if (garage_door.obstructed != currently_obstructed)
                     {
-                        garage_door.motion_timer = millis() + 5000;
-                        garage_door.motion = garage_door.obstructed;
-                        notify_homekit_motion();
+                        garage_door.obstructed = currently_obstructed;
+                        RINFO("Obstruction %s (Pair3Resp parity %d)", 
+                              currently_obstructed ? "Detected" : "Clear", parity);
+                        
+                        // Notify HomeKit of the state change
+                        notify_homekit_obstruction();
+                        digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
+                        
+                        // Trigger motion detection if enabled
+                        if (motionTriggers.bit.obstruction)
+                        {
+                            garage_door.motion_timer = millis() + 5000;
+                            garage_door.motion = garage_door.obstructed;
+                            notify_homekit_motion();
+                        }
                     }
                 }
                 break;
