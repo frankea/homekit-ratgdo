@@ -1,0 +1,16 @@
+--- a/src/utilities.h
++++ b/src/utilities.h
+@@ -97,6 +97,13 @@ typedef union
+ } motionTriggersUnion;
+ extern motionTriggersUnion motionTriggers;
+ 
++// TESTING: Simulate millis() rollover
++#ifdef TEST_ROLLOVER
++#define ROLLOVER_OFFSET (0xFFFFFFFF - 60000)  // Start 60 seconds before rollover
++#define millis() (millis_original() + ROLLOVER_OFFSET)
++unsigned long millis_original() { return ::millis(); }
++#endif
++
+ // Function declarations
+ void load_all_config_settings();
+ void sync_and_restart();

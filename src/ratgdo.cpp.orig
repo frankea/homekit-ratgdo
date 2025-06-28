@@ -10,7 +10,6 @@
 #include "web.h"
 #include "utilities.h"
 #include "Packet.h"
-#include "test_millis.h"
 
 #include <time.h>
 #include <coredecls.h>
@@ -142,9 +141,6 @@ void loop()
     // Poll OneButton objects
     buttonOpen.tick();
     buttonClose.tick();
-
-    // Log rollover test status
-    log_rollover_status();
 
     // wait for a status command to be processes to properly set the initial state of
     // all homekit characteristics.  Also timeout if we don't receive a status in

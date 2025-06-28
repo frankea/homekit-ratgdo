@@ -1,0 +1,20 @@
+--- a/src/ratgdo.cpp
++++ b/src/ratgdo.cpp
+@@ -6,6 +6,7 @@
+ #include "utilities.h"
+ #include "comms.h"
+ #include "wifi.h"
++#include "test_millis.h"
+ 
+ #include <homekit/homekit.h>
+ #include <homekit/characteristics.h>
+@@ -141,6 +142,9 @@ void loop()
+     comms_loop();
+     // Poll OneButton objects
+     buttonOpen.tick();
+     buttonClose.tick();
++
++    // Log rollover test status
++    log_rollover_status();
+ 
+     // wait for a status command to be processes to properly set the initial state of
