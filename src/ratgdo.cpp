@@ -299,7 +299,6 @@ void obstruction_timer()
                 pulse_detection_started = true;
                 RINFO("Pin-based obstruction detection active");
             }
-            RINFO("Pin pulses detected: %d", obstruction_sensor.low_count);
             
             // Only update if we are changing state
             if (garage_door.obstructed)
@@ -354,7 +353,7 @@ void obstruction_timer()
             pin_obstruction_available = false;
         } else if (!pulse_detection_started && current_millis > 5000) {
             // If we haven't seen any pulses after 5 seconds, assume pin detection isn't working
-            RINFO("No pin pulses detected after 5s, switching to Pair3Resp");
+            RINFO("Pin-based obstruction detection not working, switching to Pair3Resp");
             pin_obstruction_available = false;
         }
     }

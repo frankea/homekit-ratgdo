@@ -894,7 +894,6 @@ void comms_loop_sec2()
             {
                 // Only use Pair3Resp for obstruction detection if pin-based detection isn't working
                 if (!pin_obstruction_available) {
-                    RINFO("Using Pair3Resp for obstruction detection (pin method unavailable)");
                     // Use Pair3Resp packets for obstruction detection via parity
                     // Parity 3 = clear, Parity 4 = obstructed
                     uint8_t parity = pkt.m_data.value.no_data.parity;
