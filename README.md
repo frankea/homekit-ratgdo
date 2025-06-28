@@ -20,8 +20,14 @@ ESP8266-based hardware.
 
 * Opening and closing multiple garage doors independently in the same HomeKit home.
 * Light Control and Status
-* Obstruction sensor reporting
+* Obstruction sensor reporting with automatic fallback detection
 * Motion sensor reporting, if you have a "smart" wall-mounted control panel.
+
+### Recent Improvements (v1.8.4+)
+
+* **Enhanced Stability** - Fixed critical ESP8266 alignment crashes and millis() rollover issues for long-term reliability
+* **Smart Obstruction Detection** - Automatic fallback from pin-based to packet-based detection when hardware sensing fails
+* **Improved Reliability** - Better WiFi connection handling and timing precision
 
 That's it, for now. Check the [GitHub Issues](https://github.com/ratgdo/homekit-ratgdo/issues) for
 planned features, or to suggest your own.

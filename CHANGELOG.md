@@ -2,6 +2,26 @@
 
 All notable changes to `homekit-ratgdo` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v1.8.4+ (2025-06-28)
+
+### What's Changed
+
+* **Critical Bugfix** - Fixed ESP8266 alignment crashes (Exception 9/LoadStoreAlignmentCause) by ensuring 4-byte alignment for multi-byte data structures
+* **Reliability Enhancement** - Fixed millis() rollover bugs that caused timing issues after ~49.7 days of uptime using rollover-safe arithmetic
+* **New Feature** - Added automatic fallback obstruction detection that switches from pin-based to Pair3Resp packet-based detection when pin method fails
+* **Stability** - Improved WiFi timeout handling and LED timing to prevent edge cases during millis() rollover
+
+### Technical Details
+
+* Added `__attribute__((aligned(4)))` to `PacketAction` and `ForceRecover` structs
+* Replaced direct millis() comparisons with rollover-safe subtraction patterns
+* Implemented smart obstruction detection with 3-second fallback timeout
+* Enhanced gateway ping and connection timeout reliability
+
+### Known Issues
+
+* None
+
 ## v1.8.3 (2024-11-23)
 
 ### What's Changed
