@@ -430,8 +430,15 @@ bool on_command_callback(improv::ImprovCommand cmd)
 void get_available_wifi_networks()
 {
     int networkNum = WiFi.scanNetworks();
+    
+    // Limit to prevent stack overflow in dense WiFi environments
+    const int MAX_NETWORKS = 50;
+    if (networkNum > MAX_NETWORKS) {
+        RINFO("Found %d networks, limiting to %d to prevent stack overflow", networkNum, MAX_NETWORKS);
+        networkNum = MAX_NETWORKS;
+    }
 
-    int sortedIndicies[networkNum];
+    int sortedIndicies[MAX_NETWORKS];
     for (int i = 0; i < networkNum; i++)
     {
         sortedIndicies[i] = i;
