@@ -93,6 +93,7 @@ public:
 };
 
 extern LED led;
+extern bool pin_obstruction_available;
 
 #define LOOP_SYSTEM 0
 #define LOOP_IMPROV 1

@@ -39,6 +39,63 @@ EspSaveCrash saveCrash(1408, 1024, true);
 // Declare web server on HTTP port 80.
 ESP8266WebServer server(80);
 
+// Connection throttling
+#define MAX_CONCURRENT_REQUESTS 4
+#define REQUEST_TIMEOUT_MS 5000
+struct ActiveRequest {
+    IPAddress clientIP;
+    unsigned long startTime;
+    bool inUse;
+};
+ActiveRequest activeRequests[MAX_CONCURRENT_REQUESTS];
+int activeRequestCount = 0;
+
+// Helper functions for connection throttling
+bool registerRequest() {
+    IPAddress clientIP = server.client().remoteIP();
+    unsigned long now = millis();
+    
+    // Clean up timed-out requests
+    for (int i = 0; i < MAX_CONCURRENT_REQUESTS; i++) {
+        if (activeRequests[i].inUse && (now - activeRequests[i].startTime > REQUEST_TIMEOUT_MS)) {
+            RINFO("Request timeout for client %s", activeRequests[i].clientIP.toString().c_str());
+            activeRequests[i].inUse = false;
+            activeRequestCount--;
+        }
+    }
+    
+    // Check if we're at capacity
+    if (activeRequestCount >= MAX_CONCURRENT_REQUESTS) {
+        RINFO("Max concurrent requests reached, rejecting %s", clientIP.toString().c_str());
+        return false;
+    }
+    
+    // Find a free slot
+    for (int i = 0; i < MAX_CONCURRENT_REQUESTS; i++) {
+        if (!activeRequests[i].inUse) {
+            activeRequests[i].clientIP = clientIP;
+            activeRequests[i].startTime = now;
+            activeRequests[i].inUse = true;
+            activeRequestCount++;
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+void unregisterRequest() {
+    IPAddress clientIP = server.client().remoteIP();
+    
+    for (int i = 0; i < MAX_CONCURRENT_REQUESTS; i++) {
+        if (activeRequests[i].inUse && activeRequests[i].clientIP == clientIP) {
+            activeRequests[i].inUse = false;
+            activeRequestCount--;
+            break;
+        }
+    }
+}
+
 // Forward declare the internal URI handling functions...
 void handle_reset();
 void handle_reboot();
@@ -199,42 +256,94 @@ SSESubscription *firmwareUpdateSub = NULL;
 
 uint8_t subscriptionCount = 0;
 
+// Performance management
+#define MAX_CONCURRENT_CONNECTIONS 3
+#define REQUEST_TIMEOUT_MS 5000
+#define MIN_REQUEST_INTERVAL_MS 100
+static unsigned long last_request_time = 0;
+static uint8_t active_connections = 0;
+static unsigned long connection_start_time = 0;
+
+// JSON response caching
 #define JSON_BUFFER_SIZE 1280
+#define JSON_CACHE_TIMEOUT_MS 500
 char *json = NULL;
+static char *cached_json = NULL;
+static unsigned long json_cache_time = 0;
+static bool json_cache_valid = false;
+size_t json_offset = 0;
+
+// Function to invalidate JSON cache when state changes
+void invalidate_json_cache() {
+    json_cache_valid = false;
+}
+
+// Performance monitoring
+static unsigned long request_count = 0;
+static unsigned long cache_hits = 0;
+static unsigned long dropped_connections = 0;
+static unsigned long max_response_time = 0;
+
+// Safe string concatenation helper
+static bool safe_strcat(char *dest, size_t dest_size, const char *src) {
+    size_t dest_len = strlen(dest);
+    size_t src_len = strlen(src);
+    
+    if (dest_len + src_len >= dest_size) {
+        RERROR("JSON buffer overflow prevented! Current: %d, Adding: %d, Max: %d", 
+               dest_len, src_len, dest_size);
+        return false;
+    }
+    
+    strcat(dest, src);
+    return true;
+}
+
+#define SAFE_STRCAT(dest, src) safe_strcat(dest, JSON_BUFFER_SIZE, src)
 
 #define START_JSON(s)     \
     {                     \
         s[0] = 0;         \
-        strcat(s, "{\n"); \
+        SAFE_STRCAT(s, "{\n"); \
     }
 #define END_JSON(s)           \
     {                         \
-        s[strlen(s) - 2] = 0; \
-        strcat(s, "\n}");     \
+        if (strlen(s) >= 2) { \
+            s[strlen(s) - 2] = 0; \
+            SAFE_STRCAT(s, "\n}");     \
+        } \
     }
 #define ADD_INT(s, k, v)                      \
     {                                         \
-        strcat(s, "\"");                      \
-        strcat_P(s, PSTR(k));                 \
-        strcat(s, "\": ");                    \
-        strcat(s, std::to_string(v).c_str()); \
-        strcat(s, ",\n");                     \
+        char temp[32];                        \
+        snprintf(temp, sizeof(temp), "\"%s\": %d,\n", k, (int)(v)); \
+        SAFE_STRCAT(s, temp);                 \
+    }
+#define ADD_LONG(s, k, v)                     \
+    {                                         \
+        char temp[32];                        \
+        snprintf(temp, sizeof(temp), "\"%s\": %lu,\n", k, (unsigned long)(v)); \
+        SAFE_STRCAT(s, temp);                 \
+    }
+#define ADD_TIME(s, k, v)                     \
+    {                                         \
+        char temp[32];                        \
+        snprintf(temp, sizeof(temp), "\"%s\": %lld,\n", k, (long long)(v)); \
+        SAFE_STRCAT(s, temp);                 \
     }
 #define ADD_STR(s, k, v)      \
     {                         \
-        strcat(s, "\"");      \
-        strcat_P(s, PSTR(k)); \
-        strcat(s, "\": \"");  \
-        strcat(s, (v));       \
-        strcat(s, "\",\n");   \
+        SAFE_STRCAT(s, "\"");      \
+        SAFE_STRCAT(s, k); \
+        SAFE_STRCAT(s, "\": \"");  \
+        SAFE_STRCAT(s, (v));       \
+        SAFE_STRCAT(s, "\",\n");   \
     }
 #define ADD_BOOL(s, k, v)                  \
     {                                      \
-        strcat(s, "\"");                   \
-        strcat_P(s, PSTR(k));              \
-        strcat(s, "\": ");                 \
-        strcat(s, (v) ? "true" : "false"); \
-        strcat(s, ",\n");                  \
+        char temp[64];                     \
+        snprintf(temp, sizeof(temp), "\"%s\": %s,\n", k, (v) ? "true" : "false"); \
+        SAFE_STRCAT(s, temp);              \
     }
 #define ADD_BOOL_C(s, k, v, ov) \
     {                           \
@@ -298,7 +407,7 @@ void web_loop()
         lastDoorState = garage_door.current_state;
         // We send milliseconds relative to current time... ie updated X milliseconds ago
         // First time through, zero offset from upTime, which is when we last rebooted)
-        ADD_INT(json, "lastDoorUpdateAt", (upTime - lastDoorUpdateAt));
+        ADD_LONG(json, "lastDoorUpdateAt", (upTime - lastDoorUpdateAt));
     }
     // Conditional macros, only add if value has changed
     ADD_BOOL_C(json, "paired", homekit_is_paired(), last_reported_paired);
@@ -310,7 +419,7 @@ void web_loop()
     if (strlen(json) > 2)
     {
         // Have we added anything to the JSON string?
-        ADD_INT(json, "upTime", upTime);
+        ADD_LONG(json, "upTime", upTime);
         END_JSON(json);
         REMOVE_NL(json);
         SSEBroadcastState(json);
@@ -323,19 +432,68 @@ void web_loop()
         sync_and_restart();
         return;
     }
+    
+    // Connection throttling and timeout management
+    unsigned long current_time = millis();
+    
+    // Check if we have a client connection
+    WiFiClient client = server.client();
+    if (client) {
+        if (connection_start_time == 0) {
+            connection_start_time = current_time;
+            active_connections++;
+        }
+        
+        // Check for connection timeout
+        if (current_time - connection_start_time > REQUEST_TIMEOUT_MS) {
+            dropped_connections++;
+            RINFO("Connection timeout, dropping client %s (total dropped: %lu)", client.remoteIP().toString().c_str(), dropped_connections);
+            client.stop();
+            connection_start_time = 0;
+            if (active_connections > 0) active_connections--;
+            return;
+        }
+        
+        // Check concurrent connection limit
+        if (active_connections > MAX_CONCURRENT_CONNECTIONS) {
+            dropped_connections++;
+            RINFO("Too many concurrent connections (%d), dropping client %s (total dropped: %lu)", active_connections, client.remoteIP().toString().c_str(), dropped_connections);
+            client.stop();
+            connection_start_time = 0;
+            if (active_connections > 0) active_connections--;
+            return;
+        }
+        
+        // Rate limiting - minimum interval between requests
+        if (current_time - last_request_time < MIN_REQUEST_INTERVAL_MS) {
+            return; // Skip this cycle to enforce rate limit
+        }
+    } else {
+        // No client connected, reset connection tracking
+        if (connection_start_time != 0) {
+            connection_start_time = 0;
+            if (active_connections > 0) active_connections--;
+        }
+    }
+    
     server.handleClient();
+    
+    // Update last request time when we actually handle a request
+    if (client && client.connected()) {
+        last_request_time = current_time;
+    }
 }
 
 void setup_web()
 {
     RINFO("=== Starting HTTP web server ===");
-    IRAM_START
-    // IRAM heap is used only for allocating globals, to leave as much regular heap
-    // available during operations.  We need to carefully monitor useage so as not
-    // to exceed available IRAM.  We can adjust the LOG_BUFFER_SIZE (in log.h) if we
-    // need to make more space available for initialization.
+    
+    // Allocate JSON buffer from regular heap instead of IRAM to save IRAM space
     json = (char *)malloc(JSON_BUFFER_SIZE);
     RINFO("Allocated buffer for JSON, size: %d", JSON_BUFFER_SIZE);
+    
+    IRAM_START
+    // IRAM heap is used only for allocating critical globals during initialization.
     last_reported_paired = homekit_is_paired();
 
     if (motionTriggers.asInt == 0)
@@ -391,6 +549,12 @@ void setup_web()
         subscription[i].clientIP = INADDR_NONE;
         subscription[i].clientUUID.clear();
     }
+    
+    // Initialize connection tracking
+    for (int i = 0; i < MAX_CONCURRENT_REQUESTS; i++) {
+        activeRequests[i].inUse = false;
+    }
+    activeRequestCount = 0;
     IRAM_END("HTTP server started");
     return;
 }
@@ -469,7 +633,7 @@ void load_page(const char *page)
     if ((CACHE_CONTROL > 0) &&
         (!strcmp_P(type, type_css) || !strcmp_P(type, type_js) || strstr_P(type, PSTR("image"))))
     {
-        sprintf(cacheHdr, "max-age=%i", CACHE_CONTROL);
+        snprintf(cacheHdr, sizeof(cacheHdr), "max-age=%i", CACHE_CONTROL);
         cache = true;
     }
     if (server.hasHeader(F("If-None-Match")))
@@ -534,6 +698,12 @@ void load_page(const char *page)
 
 void handle_everything()
 {
+    // Connection throttling
+    if (!registerRequest()) {
+        server.send(503, "text/plain", "Server too busy, please try again");
+        return;
+    }
+    
     HTTPMethod method = server.method();
     String page = server.uri();
     const char *uri = page.c_str();
@@ -542,55 +712,94 @@ void handle_everything()
     {
         // If we are in Soft Access Point mode
         RINFO("WiFi Soft Access Point mode");
-        if (page == "/" || page == "/ap")
-            return handle_accesspoint();
-        else if (page == "/setssid" && method == HTTP_POST)
-            return handle_setssid();
-        else if (page == "/reboot" && method == HTTP_POST)
-            return handle_reboot();
+        if (page == "/" || page == "/ap") {
+            handle_accesspoint();
+            unregisterRequest();
+            return;
+        }
+        else if (page == "/setssid" && method == HTTP_POST) {
+            handle_setssid();
+            unregisterRequest();
+            return;
+        }
+        else if (page == "/reboot" && method == HTTP_POST) {
+            handle_reboot();
+            unregisterRequest();
+            return;
+        }
         else if (page == "/rescan" && method == HTTP_POST)
         {
             wifi_scan();
-            return handle_accesspoint();
+            handle_accesspoint();
+            unregisterRequest();
+            return;
         }
-        else
-            return handle_notfound();
+        else {
+            handle_notfound();
+            unregisterRequest();
+            return;
+        }
     }
 
     if (builtInUri.count(uri) > 0)
     {
         // requested page matches one of our built-in handlers
         RINFO("Client %s requesting: %s (method: %s)", server.client().remoteIP().toString().c_str(), uri, http_methods[method]);
-        if (method == builtInUri.at(uri).first)
-            return builtInUri.at(uri).second();
-        else
-            return handle_notfound();
+        if (method == builtInUri.at(uri).first) {
+            builtInUri.at(uri).second();
+        } else {
+            handle_notfound();
+        }
+        unregisterRequest();
+        return;
     }
     else if ((method == HTTP_GET) && (!strncmp_P(uri, restEvents, strlen(restEvents))))
     {
         // Request for "/rest/events/" with a channel number appended
         uri += strlen(restEvents);
         unsigned int channel = atoi(uri);
-        if (channel < SSE_MAX_CHANNELS)
-            return SSEHandler(channel);
-        else
-            return handle_notfound();
+        if (channel < SSE_MAX_CHANNELS) {
+            SSEHandler(channel);
+        } else {
+            handle_notfound();
+        }
+        unregisterRequest();
+        return;
     }
     else if (method == HTTP_GET || method == HTTP_HEAD)
     {
         // HTTP_GET that does not match a built-in handler
-        if (page == "/")
-            return load_page("/index.html");
-        else
-            return load_page(uri);
+        if (page == "/") {
+            load_page("/index.html");
+        } else {
+            load_page(uri);
+        }
+        unregisterRequest();
+        return;
     }
     // it is a HTTP_POST for unknown URI
-    return handle_notfound();
+    handle_notfound();
+    unregisterRequest();
+    return;
 }
 
 void handle_status()
 {
-    unsigned long upTime = millis();
+    unsigned long start_time = millis();
+    unsigned long upTime = start_time;
+    request_count++;
+    
+    // Check if we can use cached JSON response
+    if (json_cache_valid && (upTime - json_cache_time < JSON_CACHE_TIMEOUT_MS)) {
+        cache_hits++;
+        server.sendHeader(F("Cache-Control"), F("no-cache, no-store"));
+        server.send_P(200, type_json, cached_json);
+        unsigned long response_time = millis() - start_time;
+        if (response_time > max_response_time) max_response_time = response_time;
+        RINFO("JSON cached response, length: %d, time: %lums", strlen(cached_json), response_time);
+        return;
+    }
+    
 #define paired homekit_is_paired()
 #define accessoryID arduino_homekit_get_running_server() ? arduino_homekit_get_running_server()->accessory_id : "Inactive"
 #define clientCount arduino_homekit_get_running_server() ? arduino_homekit_get_running_server()->nfds : 0
@@ -603,7 +812,7 @@ void handle_status()
 #define GDOSecurityType std::to_string(gdoSecurityType).c_str()
     // Build the JSON string
     START_JSON(json);
-    ADD_INT(json, "upTime", upTime);
+    ADD_LONG(json, "upTime", upTime);
     ADD_STR(json, "deviceName", device_name);
     ADD_STR(json, "userName", userConfig->wwwUsername);
     ADD_BOOL(json, "paired", paired);
@@ -641,14 +850,19 @@ void handle_status()
     ADD_INT(json, "motionTriggers", motionTriggers.asInt);
     ADD_INT(json, "LEDidle", led.getIdleState());
     // We send milliseconds relative to current time... ie updated X milliseconds ago
-    ADD_INT(json, "lastDoorUpdateAt", (upTime - lastDoorUpdateAt));
+    ADD_LONG(json, "lastDoorUpdateAt", (upTime - lastDoorUpdateAt));
+    // Web performance metrics
+    ADD_LONG(json, "webRequests", request_count);
+    ADD_LONG(json, "webCacheHits", cache_hits);
+    ADD_LONG(json, "webDroppedConns", dropped_connections);
+    ADD_LONG(json, "webMaxResponseTime", max_response_time);
 #ifdef NTP_CLIENT
     ADD_BOOL(json, "enableNTP", enableNTP);
     if (enableNTP)
     {
         if (clockSet)
         {
-            ADD_INT(json, "serverTime", time(NULL));
+            ADD_TIME(json, "serverTime", time(NULL));
         }
         ADD_STR(json, "timeZone", userConfig->timeZone);
     }
@@ -660,9 +874,22 @@ void handle_status()
     Serial.printf("%s\n", json);
     last_reported_garage_door = garage_door;
 
+    // Cache the JSON response for performance
+    if (cached_json == NULL) {
+        cached_json = (char*)malloc(JSON_BUFFER_SIZE);
+    }
+    if (cached_json != NULL) {
+        strncpy(cached_json, json, JSON_BUFFER_SIZE - 1);
+        cached_json[JSON_BUFFER_SIZE - 1] = '\0';
+        json_cache_time = millis();
+        json_cache_valid = true;
+    }
+
     server.sendHeader(F("Cache-Control"), F("no-cache, no-store"));
     server.send_P(200, type_json, json);
-    RINFO("JSON length: %d", strlen(json));
+    unsigned long response_time = millis() - start_time;
+    if (response_time > max_response_time) max_response_time = response_time;
+    RINFO("JSON length: %d, time: %lums", strlen(json), response_time);
     return;
 }
 
@@ -1016,7 +1243,7 @@ void SSEheartbeat(SSESubscription *s)
         static int lastClientCount = 0;
 
         START_JSON(json);
-        ADD_INT(json, "upTime", millis());
+        ADD_LONG(json, "upTime", millis());
         ADD_INT(json, "freeHeap", free_heap);
         ADD_INT(json, "minHeap", min_heap);
         ADD_INT(json, "minStack", ESP.getFreeContStack());

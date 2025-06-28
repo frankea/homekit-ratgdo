@@ -370,7 +370,7 @@ void comms_loop_sec1()
             {
             // door status
             case secplus1Codes::DoorStatus:
-
+            {
                 // RINFO("0x38 MSG: %02X",val);
 
                 // 0x5X = stopped
@@ -391,13 +391,27 @@ void comms_loop_sec1()
                 // 110 0x6 stopped
 
                 // sec+1 doors sometimes report wrong door status
-                // require two sequential matching door states
-                // I have not seen this to be the case on my unit (MJS)
-                static uint8_t prevDoor;
-                if (prevDoor != val)
+                // Use improved validation: accept single state if valid, require confirmation for suspicious values
+                static uint8_t prevDoor = 0xFF; // Initialize to invalid value
+                static uint8_t stateConfirmCount = 0;
+                
+                // Accept valid states immediately, but require confirmation for edge cases
+                bool isValidState = (val <= 0x06 && val != 0x03); // 0x03 is not a known valid state
+                
+                if (prevDoor == val)
+                {
+                    stateConfirmCount++;
+                }
+                else
                 {
                     prevDoor = val;
-                    break;
+                    stateConfirmCount = 1;
+                }
+                
+                // Accept immediately if valid state, or if confirmed twice for edge cases
+                if (!isValidState && stateConfirmCount < 2)
+                {
+                    break; // Wait for confirmation on suspicious values
                 }
 
                 switch (val)
@@ -515,6 +529,7 @@ void comms_loop_sec1()
                 }
 
                 break;
+            }
 
             // objstruction states (not confirmed)
             case secplus1Codes::ObstructionStatus:
@@ -886,6 +901,38 @@ void comms_loop_sec2()
                     garage_door.motion_timer = millis() + 5000;
                     garage_door.motion = true;
                     notify_homekit_motion();
+                }
+                break;
+            }
+
+            case PacketCommand::Pair3Resp:
+            {
+                // Only use Pair3Resp for obstruction detection if pin-based detection isn't working
+                if (!pin_obstruction_available) {
+                    // Use Pair3Resp packets for obstruction detection via parity
+                    // Parity 3 = clear, Parity 4 = obstructed
+                    uint8_t parity = pkt.m_data.value.no_data.parity;
+                    bool currently_obstructed = (parity == 4);
+                    
+                    // Only update if obstruction state has changed
+                    if (garage_door.obstructed != currently_obstructed)
+                    {
+                    garage_door.obstructed = currently_obstructed;
+                    RINFO("Obstruction %s (Pair3Resp parity %d)", 
+                          currently_obstructed ? "Detected" : "Clear", parity);
+                    
+                    // Notify HomeKit of the state change
+                    notify_homekit_obstruction();
+                    digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
+                    
+                    // Trigger motion detection if enabled
+                    if (motionTriggers.bit.obstruction)
+                    {
+                        garage_door.motion_timer = millis() + 5000;
+                        garage_door.motion = garage_door.obstructed;
+                        notify_homekit_motion();
+                    }
+                    }
                 }
                 break;
             }
