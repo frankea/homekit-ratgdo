@@ -199,8 +199,32 @@ SSESubscription *firmwareUpdateSub = NULL;
 
 uint8_t subscriptionCount = 0;
 
+// Performance management
+#define MAX_CONCURRENT_CONNECTIONS 3
+#define REQUEST_TIMEOUT_MS 5000
+#define MIN_REQUEST_INTERVAL_MS 100
+static unsigned long last_request_time = 0;
+static uint8_t active_connections = 0;
+static unsigned long connection_start_time = 0;
+
+// JSON response caching
 #define JSON_BUFFER_SIZE 1280
+#define JSON_CACHE_TIMEOUT_MS 500
 char *json = NULL;
+static char *cached_json = NULL;
+static unsigned long json_cache_time = 0;
+static bool json_cache_valid = false;
+
+// Function to invalidate JSON cache when state changes
+void invalidate_json_cache() {
+    json_cache_valid = false;
+}
+
+// Performance monitoring
+static unsigned long request_count = 0;
+static unsigned long cache_hits = 0;
+static unsigned long dropped_connections = 0;
+static unsigned long max_response_time = 0;
 
 #define START_JSON(s)     \
     {                     \
@@ -323,7 +347,56 @@ void web_loop()
         sync_and_restart();
         return;
     }
+    
+    // Connection throttling and timeout management
+    unsigned long current_time = millis();
+    
+    // Check if we have a client connection
+    WiFiClient client = server.client();
+    if (client) {
+        if (connection_start_time == 0) {
+            connection_start_time = current_time;
+            active_connections++;
+        }
+        
+        // Check for connection timeout
+        if (current_time - connection_start_time > REQUEST_TIMEOUT_MS) {
+            dropped_connections++;
+            RINFO("Connection timeout, dropping client %s (total dropped: %lu)", client.remoteIP().toString().c_str(), dropped_connections);
+            client.stop();
+            connection_start_time = 0;
+            if (active_connections > 0) active_connections--;
+            return;
+        }
+        
+        // Check concurrent connection limit
+        if (active_connections > MAX_CONCURRENT_CONNECTIONS) {
+            dropped_connections++;
+            RINFO("Too many concurrent connections (%d), dropping client %s (total dropped: %lu)", active_connections, client.remoteIP().toString().c_str(), dropped_connections);
+            client.stop();
+            connection_start_time = 0;
+            if (active_connections > 0) active_connections--;
+            return;
+        }
+        
+        // Rate limiting - minimum interval between requests
+        if (current_time - last_request_time < MIN_REQUEST_INTERVAL_MS) {
+            return; // Skip this cycle to enforce rate limit
+        }
+    } else {
+        // No client connected, reset connection tracking
+        if (connection_start_time != 0) {
+            connection_start_time = 0;
+            if (active_connections > 0) active_connections--;
+        }
+    }
+    
     server.handleClient();
+    
+    // Update last request time when we actually handle a request
+    if (client && client.connected()) {
+        last_request_time = current_time;
+    }
 }
 
 void setup_web()
@@ -590,7 +663,21 @@ void handle_everything()
 
 void handle_status()
 {
-    unsigned long upTime = millis();
+    unsigned long start_time = millis();
+    unsigned long upTime = start_time;
+    request_count++;
+    
+    // Check if we can use cached JSON response
+    if (json_cache_valid && (upTime - json_cache_time < JSON_CACHE_TIMEOUT_MS)) {
+        cache_hits++;
+        server.sendHeader(F("Cache-Control"), F("no-cache, no-store"));
+        server.send_P(200, type_json, cached_json);
+        unsigned long response_time = millis() - start_time;
+        if (response_time > max_response_time) max_response_time = response_time;
+        RINFO("JSON cached response, length: %d, time: %lums", strlen(cached_json), response_time);
+        return;
+    }
+    
 #define paired homekit_is_paired()
 #define accessoryID arduino_homekit_get_running_server() ? arduino_homekit_get_running_server()->accessory_id : "Inactive"
 #define clientCount arduino_homekit_get_running_server() ? arduino_homekit_get_running_server()->nfds : 0
@@ -642,6 +729,11 @@ void handle_status()
     ADD_INT(json, "LEDidle", led.getIdleState());
     // We send milliseconds relative to current time... ie updated X milliseconds ago
     ADD_INT(json, "lastDoorUpdateAt", (upTime - lastDoorUpdateAt));
+    // Web performance metrics
+    ADD_INT(json, "webRequests", request_count);
+    ADD_INT(json, "webCacheHits", cache_hits);
+    ADD_INT(json, "webDroppedConns", dropped_connections);
+    ADD_INT(json, "webMaxResponseTime", max_response_time);
 #ifdef NTP_CLIENT
     ADD_BOOL(json, "enableNTP", enableNTP);
     if (enableNTP)
@@ -660,9 +752,22 @@ void handle_status()
     Serial.printf("%s\n", json);
     last_reported_garage_door = garage_door;
 
+    // Cache the JSON response for performance
+    if (cached_json == NULL) {
+        cached_json = (char*)malloc(JSON_BUFFER_SIZE);
+    }
+    if (cached_json != NULL) {
+        strncpy(cached_json, json, JSON_BUFFER_SIZE - 1);
+        cached_json[JSON_BUFFER_SIZE - 1] = '\0';
+        json_cache_time = millis();
+        json_cache_valid = true;
+    }
+
     server.sendHeader(F("Cache-Control"), F("no-cache, no-store"));
     server.send_P(200, type_json, json);
-    RINFO("JSON length: %d", strlen(json));
+    unsigned long response_time = millis() - start_time;
+    if (response_time > max_response_time) max_response_time = response_time;
+    RINFO("JSON length: %d, time: %lums", strlen(json), response_time);
     return;
 }
 
