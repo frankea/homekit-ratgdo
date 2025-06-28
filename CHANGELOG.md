@@ -41,7 +41,8 @@ All notable changes to `homekit-ratgdo` will be documented in this file. This pr
 * Replaced direct millis() comparisons with rollover-safe subtraction patterns throughout codebase
 * Implemented smart obstruction detection with 3-second fallback timeout from pin-based to Pair3Resp packet detection
 * Enhanced gateway ping and WiFi connection timeout reliability with rollover-safe timing
-* Reduced LOG_BUFFER_SIZE from 8KB to 4KB and moved JSON buffer allocation from IRAM to regular heap
+* Reduced LOG_BUFFER_SIZE from 8KB to 4KB to free IRAM for SEC+1.0 mode HomeKit initialization (fixes #252)
+* Moved JSON buffer allocation from IRAM to regular heap
 * Added web server connection management, rate limiting, and performance monitoring
 * Replaced Variable Length Arrays (VLA) with fixed-size arrays for stack safety
 * Added proper format specifiers (ADD_LONG, ADD_TIME macros) for type safety and eliminated compiler warnings
@@ -49,10 +50,13 @@ All notable changes to `homekit-ratgdo` will be documented in this file. This pr
 
 ### Issues Resolved
 
-* **#267** - Connectivity crashes, web interface timeouts, WiFi instability, Exception (0) crashes with ASCII in addresses
-* **#266** - Slow web interface performance and timeouts
+* **#124** - Obstruction sensor unreliable/always shows obstructed (fixed by automatic fallback to Pair3Resp packet-based detection)
+* **#218/#215** - Memory-related crashes and HomeKit malloc failures (improved by IRAM optimization and connection management)
+* **#252** - SEC+1.0 bootloop crashes due to IRAM heap exhaustion during HomeKit MDNS initialization (fixed by LOG_BUFFER_SIZE optimization)
 * **#261** - Timing issues and bugs after millis() rollover (49+ day uptime)
-* **#252** - ESP8266 alignment crashes (LoadStoreAlignmentCause exceptions)
+* **#266** - Slow web interface performance and timeouts
+* **#267** - Connectivity crashes, web interface timeouts, WiFi instability, Exception (0) crashes with ASCII in addresses
+* **#271** - ESP8266 alignment crashes (Exception 9/LoadStoreAlignmentCause) due to unaligned struct access
 
 ### Known Issues
 
