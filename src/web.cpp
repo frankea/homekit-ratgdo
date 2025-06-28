@@ -315,7 +315,19 @@ static bool safe_strcat(char *dest, size_t dest_size, const char *src) {
 #define ADD_INT(s, k, v)                      \
     {                                         \
         char temp[32];                        \
-        snprintf(temp, sizeof(temp), "\"%s\": %d,\n", k, v); \
+        snprintf(temp, sizeof(temp), "\"%s\": %d,\n", k, (int)(v)); \
+        SAFE_STRCAT(s, temp);                 \
+    }
+#define ADD_LONG(s, k, v)                     \
+    {                                         \
+        char temp[32];                        \
+        snprintf(temp, sizeof(temp), "\"%s\": %lu,\n", k, (unsigned long)(v)); \
+        SAFE_STRCAT(s, temp);                 \
+    }
+#define ADD_TIME(s, k, v)                     \
+    {                                         \
+        char temp[32];                        \
+        snprintf(temp, sizeof(temp), "\"%s\": %lld,\n", k, (long long)(v)); \
         SAFE_STRCAT(s, temp);                 \
     }
 #define ADD_STR(s, k, v)      \
@@ -394,7 +406,7 @@ void web_loop()
         lastDoorState = garage_door.current_state;
         // We send milliseconds relative to current time... ie updated X milliseconds ago
         // First time through, zero offset from upTime, which is when we last rebooted)
-        ADD_INT(json, "lastDoorUpdateAt", (upTime - lastDoorUpdateAt));
+        ADD_LONG(json, "lastDoorUpdateAt", (upTime - lastDoorUpdateAt));
     }
     // Conditional macros, only add if value has changed
     ADD_BOOL_C(json, "paired", homekit_is_paired(), last_reported_paired);
@@ -406,7 +418,7 @@ void web_loop()
     if (strlen(json) > 2)
     {
         // Have we added anything to the JSON string?
-        ADD_INT(json, "upTime", upTime);
+        ADD_LONG(json, "upTime", upTime);
         END_JSON(json);
         REMOVE_NL(json);
         SSEBroadcastState(json);
@@ -799,7 +811,7 @@ void handle_status()
 #define GDOSecurityType std::to_string(gdoSecurityType).c_str()
     // Build the JSON string
     START_JSON(json);
-    ADD_INT(json, "upTime", upTime);
+    ADD_LONG(json, "upTime", upTime);
     ADD_STR(json, "deviceName", device_name);
     ADD_STR(json, "userName", userConfig->wwwUsername);
     ADD_BOOL(json, "paired", paired);
@@ -837,19 +849,19 @@ void handle_status()
     ADD_INT(json, "motionTriggers", motionTriggers.asInt);
     ADD_INT(json, "LEDidle", led.getIdleState());
     // We send milliseconds relative to current time... ie updated X milliseconds ago
-    ADD_INT(json, "lastDoorUpdateAt", (upTime - lastDoorUpdateAt));
+    ADD_LONG(json, "lastDoorUpdateAt", (upTime - lastDoorUpdateAt));
     // Web performance metrics
-    ADD_INT(json, "webRequests", request_count);
-    ADD_INT(json, "webCacheHits", cache_hits);
-    ADD_INT(json, "webDroppedConns", dropped_connections);
-    ADD_INT(json, "webMaxResponseTime", max_response_time);
+    ADD_LONG(json, "webRequests", request_count);
+    ADD_LONG(json, "webCacheHits", cache_hits);
+    ADD_LONG(json, "webDroppedConns", dropped_connections);
+    ADD_LONG(json, "webMaxResponseTime", max_response_time);
 #ifdef NTP_CLIENT
     ADD_BOOL(json, "enableNTP", enableNTP);
     if (enableNTP)
     {
         if (clockSet)
         {
-            ADD_INT(json, "serverTime", time(NULL));
+            ADD_TIME(json, "serverTime", time(NULL));
         }
         ADD_STR(json, "timeZone", userConfig->timeZone);
     }
@@ -1230,7 +1242,7 @@ void SSEheartbeat(SSESubscription *s)
         static int lastClientCount = 0;
 
         START_JSON(json);
-        ADD_INT(json, "upTime", millis());
+        ADD_LONG(json, "upTime", millis());
         ADD_INT(json, "freeHeap", free_heap);
         ADD_INT(json, "minHeap", min_heap);
         ADD_INT(json, "minStack", ESP.getFreeContStack());
