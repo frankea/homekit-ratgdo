@@ -85,6 +85,10 @@ extern "C" uint32_t __crc_val;
 // Track our memory usage
 uint32_t free_heap = 65535;
 uint32_t min_heap = 65535;
+#ifdef MMU_IRAM_HEAP
+uint32_t free_iram = 65535;
+uint32_t min_iram = 65535;
+#endif
 
 bool status_done = false;
 unsigned long status_start = 0;
@@ -386,7 +390,7 @@ void service_timer_loop()
         notify_homekit_motion();
     }
 
-    // Check heap
+    // Check heap (both regular and IRAM)
     static unsigned long last_heap_check = 0;
     if (current_millis - last_heap_check >= 1000)
     {
@@ -397,6 +401,19 @@ void service_timer_loop()
             min_heap = free_heap;
             RINFO("Free heap dropped to %d", min_heap);
         }
+        
+#ifdef MMU_IRAM_HEAP
+        // Also track IRAM heap usage
+        {
+            HeapSelectIram ephemeral;
+            free_iram = ESP.getFreeHeap();
+            if (free_iram < min_iram)
+            {
+                min_iram = free_iram;
+                RINFO("Free IRAM heap dropped to %d", min_iram);
+            }
+        }
+#endif
     }
 }
 

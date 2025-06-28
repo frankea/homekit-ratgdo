@@ -329,13 +329,13 @@ void web_loop()
 void setup_web()
 {
     RINFO("=== Starting HTTP web server ===");
-    IRAM_START
-    // IRAM heap is used only for allocating globals, to leave as much regular heap
-    // available during operations.  We need to carefully monitor useage so as not
-    // to exceed available IRAM.  We can adjust the LOG_BUFFER_SIZE (in log.h) if we
-    // need to make more space available for initialization.
+    
+    // Allocate JSON buffer from regular heap instead of IRAM to save IRAM space
     json = (char *)malloc(JSON_BUFFER_SIZE);
     RINFO("Allocated buffer for JSON, size: %d", JSON_BUFFER_SIZE);
+    
+    IRAM_START
+    // IRAM heap is used only for allocating critical globals during initialization.
     last_reported_paired = homekit_is_paired();
 
     if (motionTriggers.asInt == 0)
