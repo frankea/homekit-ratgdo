@@ -265,8 +265,19 @@ void IRAM_ATTR isr_obstruction()
     obstruction_sensor.low_count++;
 }
 
+// Track if pin-based obstruction detection is working (make it globally accessible)
+bool pin_obstruction_available = true;
+static unsigned long last_pulse_time = 0;
+static bool pulse_detection_started = false;
+static const unsigned long NO_PULSE_TIMEOUT = 3000; // 3 seconds without pulses = switch to Pair3Resp
+
 void obstruction_timer()
 {
+    // Skip pin-based detection if we've determined it's not working
+    if (!pin_obstruction_available) {
+        return;
+    }
+    
     unsigned long current_millis = millis();
     static unsigned long last_millis = 0;
 
@@ -283,6 +294,13 @@ void obstruction_timer()
         // check to see if we got more then PULSES_LOWER_LIMIT pulses
         if (obstruction_sensor.low_count > PULSES_LOWER_LIMIT)
         {
+            // We're getting pulses, so pin detection is working
+            last_pulse_time = current_millis;
+            if (!pulse_detection_started) {
+                pulse_detection_started = true;
+                RINFO("Pin-based obstruction detection active");
+            }
+            
             // Only update if we are changing state
             if (garage_door.obstructed)
             {
@@ -329,6 +347,12 @@ void obstruction_timer()
 
         last_millis = current_millis;
         obstruction_sensor.low_count = 0;
+        
+        // Check if we haven't seen pulses for the timeout period
+        if (pulse_detection_started && (current_millis - last_pulse_time > NO_PULSE_TIMEOUT)) {
+            RINFO("Pin-based obstruction detection not working (no pulses for 3s), switching to Pair3Resp");
+            pin_obstruction_available = false;
+        }
     }
 }
 
