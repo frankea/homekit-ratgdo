@@ -7,28 +7,52 @@ All notable changes to `homekit-ratgdo` will be documented in this file. This pr
 ### What's Changed
 
 * **Critical Bugfix** - Fixed ESP8266 alignment crashes (Exception 9/LoadStoreAlignmentCause) by ensuring 4-byte alignment for multi-byte data structures
+* **Critical Bugfix** - Fixed buffer overflow crashes (Exception 0) that were corrupting stack memory and causing device reboots with ASCII data in crash addresses
 * **Reliability Enhancement** - Fixed millis() rollover bugs that caused timing issues after ~49.7 days of uptime using rollover-safe arithmetic
+* **Connectivity Fixes** - Resolved web interface timeouts, hung connections, and WiFi instability issues (addresses #267)
 * **New Feature** - Added automatic fallback obstruction detection that switches from pin-based to Pair3Resp packet-based detection when pin method fails
 * **Performance Optimization** - Dramatically improved web interface performance with JSON caching and connection management (68% faster responses)
 * **Memory Enhancement** - Optimized IRAM usage providing 277% more free memory for HomeKit operations (7.3KB vs 1.9KB free)
 * **Stability** - Improved WiFi timeout handling and LED timing to prevent edge cases during millis() rollover
+* **Code Quality** - Fixed all compiler warnings and improved type safety throughout codebase
 
 ### Performance Improvements
 
 * JSON response caching reduces repeated requests from 459ms to 146ms (68% faster)
-* Connection throttling prevents resource exhaustion (max 3 concurrent connections)
+* Connection throttling prevents resource exhaustion (max 4 concurrent connections)
 * Request timeout handling eliminates hung connections (5-second timeout)
+* WiFi scanning limited to 50 networks to prevent stack overflow in dense environments
 * IRAM optimization provides 5.4KB additional memory headroom
 * Enhanced memory monitoring for both regular and IRAM heap usage
+* Safe string operations with bounds checking prevent buffer overflows
+
+### Crash & Stability Fixes
+
+* **Exception 9 (LoadStoreAlignmentCause)** - Fixed by adding proper struct alignment attributes to PacketAction and ForceRecover
+* **Exception 0 (Illegal Instruction)** - Fixed buffer overflow in JSON building that was corrupting return addresses with ASCII data
+* **VLA Stack Overflow** - Limited WiFi network scanning to prevent stack exhaustion in dense WiFi environments
+* **Millis() Rollover Issues** - All timing operations now handle 49+ day uptime correctly using rollover-safe arithmetic
+* **Connection Resource Leaks** - Proper cleanup of web server connections prevents resource exhaustion
 
 ### Technical Details
 
 * Added `__attribute__((aligned(4)))` to `PacketAction` and `ForceRecover` structs
-* Replaced direct millis() comparisons with rollover-safe subtraction patterns
-* Implemented smart obstruction detection with 3-second fallback timeout
-* Enhanced gateway ping and connection timeout reliability
-* Reduced LOG_BUFFER_SIZE from 8KB to 4KB and moved JSON buffer to regular heap
-* Added connection management, rate limiting, and performance monitoring
+* Replaced unsafe `strcat` with bounds-checked `safe_strcat` wrapper functions
+* Replaced direct millis() comparisons with rollover-safe subtraction patterns throughout codebase
+* Implemented smart obstruction detection with 3-second fallback timeout from pin-based to Pair3Resp packet detection
+* Enhanced gateway ping and WiFi connection timeout reliability with rollover-safe timing
+* Reduced LOG_BUFFER_SIZE from 8KB to 4KB and moved JSON buffer allocation from IRAM to regular heap
+* Added web server connection management, rate limiting, and performance monitoring
+* Replaced Variable Length Arrays (VLA) with fixed-size arrays for stack safety
+* Added proper format specifiers (ADD_LONG, ADD_TIME macros) for type safety and eliminated compiler warnings
+* Obstruction detection uses Pair3Resp packet parity (3=clear, 4=obstructed) when pin method unavailable
+
+### Issues Resolved
+
+* **#267** - Connectivity crashes, web interface timeouts, WiFi instability, Exception (0) crashes with ASCII in addresses
+* **#266** - Slow web interface performance and timeouts
+* **#261** - Timing issues and bugs after millis() rollover (49+ day uptime)
+* **#252** - ESP8266 alignment crashes (LoadStoreAlignmentCause exceptions)
 
 ### Known Issues
 
