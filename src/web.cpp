@@ -1379,6 +1379,14 @@ void handle_subscribe()
             if (!subscription[channel].clientIP)
                 break;
     }
+    
+    // Check if we found a free slot
+    if (channel >= SSE_MAX_CHANNELS) {
+        RINFO("SSE subscription failed - no free slots available");
+        server.send(503, "text/plain", "No free subscription slots available");
+        return;
+    }
+    
     subscription[channel] = {clientIP, server.client(), Ticker(), false, 0, server.arg(id), logViewer};
     SSEurl += channel;
     RINFO("SSE Subscription for client %s with IP %s: event bus location: %s, Total subscribed: %d", server.arg(id).c_str(), clientIP.toString().c_str(), SSEurl.c_str(), subscriptionCount);

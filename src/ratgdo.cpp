@@ -390,11 +390,7 @@ void service_timer_loop()
         notify_homekit_motion();
     }
 
-<<<<<<< HEAD
-    // Check heap
-=======
     // Check heap (both regular and IRAM)
->>>>>>> bf5db4c (Add comprehensive stability and performance improvements)
     static unsigned long last_heap_check = 0;
     if (current_millis - last_heap_check >= 1000)
     {
