@@ -314,7 +314,7 @@ void obstruction_timer()
             else
             {
                 // if the line is high and was last asleep more than 700ms ago, then there is an obstruction present
-                if (current_millis - last_asleep > 700)
+                if ((unsigned long)(current_millis - last_asleep) > 700)
                 {
                     // Only update if we are changing state
                     if (!garage_door.obstructed)
