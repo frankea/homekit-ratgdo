@@ -287,13 +287,13 @@ void obstruction_timer()
         // check to see if we got more than PULSES_LOWER_LIMIT pulses (removed upper limit per PR #41)
         if (obstruction_sensor.low_count > PULSES_LOWER_LIMIT)
         {
-            garage_door.obstructed = false;
             obstruction_sensor_detected = true; // Mark sensor as detected
             
             // Only update if we are changing state
             if (garage_door.obstructed != false)
             {
                 RINFO("Obstruction Clear");
+                garage_door.obstructed = false;
                 notify_homekit_obstruction();
                 digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
                 if (motionTriggers.bit.obstruction)
@@ -301,6 +301,10 @@ void obstruction_timer()
                     garage_door.motion = false;
                     notify_homekit_motion();
                 }
+            }
+            else
+            {
+                garage_door.obstructed = false; // Still need to set it
             }
         }
         else if (obstruction_sensor.low_count == 0)
