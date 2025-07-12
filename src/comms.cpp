@@ -46,6 +46,7 @@ SecPlus2Reader reader;
 uint32_t id_code = 0;
 uint32_t rolling_code = 0;
 uint32_t last_saved_code = 0;
+static bool rolling_code_operation_in_progress = false;
 #define MAX_CODES_WITHOUT_FLASH_WRITE 10
 
 /******************************* SECURITY 1.0 *********************************/
@@ -172,8 +173,16 @@ void setup_comms()
 
 void save_rolling_code()
 {
+    // Prevent concurrent rolling code operations
+    if (rolling_code_operation_in_progress) {
+        return;
+    }
+    rolling_code_operation_in_progress = true;
+    
     write_int_to_file("rolling", rolling_code);
     last_saved_code = rolling_code;
+    
+    rolling_code_operation_in_progress = false;
 }
 
 void reset_door()
@@ -293,8 +302,15 @@ void comms_loop_sec1()
         }
         else
         {
-            // save next byte
-            rx_packet[byte_count++] = ser_byte;
+            // save next byte with bounds checking to prevent overflow
+            if (byte_count < sizeof(rx_packet)) {
+                rx_packet[byte_count++] = ser_byte;
+            } else {
+                RERROR("SEC1 RX buffer overflow, discarding packet");
+                reading_msg = false;
+                byte_count = 0;
+                return;
+            }
 
             if (byte_count == RX_LENGTH)
             {
@@ -304,7 +320,7 @@ void comms_loop_sec1()
                 gotMessage = true;
             }
 
-            if (gotMessage == false && (millis() - last_rx) > 100)
+            if (gotMessage == false && ((int32_t)(millis() - last_rx) > 100))
             {
                 RINFO("RX message timeout");
                 // if we have a partial packet and it's been over 100ms since last byte was read,
@@ -620,17 +636,17 @@ void comms_loop_sec1()
         if (!wallPanelDetected)
         {
             // no wall panel
-            okToSend = (now - last_rx > 20);        // after 20ms since last rx
-            okToSend &= (now - last_tx > 20);       // after 20ms since last tx
-            okToSend &= (now - last_tx > cmdDelay); // after any command delays
+            okToSend = ((int32_t)(now - last_rx) > 20);        // after 20ms since last rx
+            okToSend &= ((int32_t)(now - last_tx) > 20);       // after 20ms since last tx
+            okToSend &= ((int32_t)(now - last_tx) > cmdDelay); // after any command delays
         }
         else
         {
             // digitial wall pnael
-            okToSend = (now - last_rx > 20);        // after 20ms since last rx
-            okToSend &= (now - last_rx < 200);      // before 200ms since last rx
-            okToSend &= (now - last_tx > 20);       // after 20ms since last tx
-            okToSend &= (now - last_tx > cmdDelay); // after any command delays
+            okToSend = ((int32_t)(now - last_rx) > 20);        // after 20ms since last rx
+            okToSend &= ((int32_t)(now - last_rx) < 200);      // before 200ms since last rx
+            okToSend &= ((int32_t)(now - last_tx) > 20);       // after 20ms since last tx
+            okToSend &= ((int32_t)(now - last_tx) > cmdDelay); // after any command delays
         }
 
         // OK to send based on above rules
@@ -945,7 +961,8 @@ void comms_loop_sec2()
     }
 
     // Save rolling code if we have exceeded max limit.
-    if (rolling_code >= (last_saved_code + MAX_CODES_WITHOUT_FLASH_WRITE))
+    // Only check if no rolling code operation is in progress to prevent race conditions
+    if (!rolling_code_operation_in_progress && rolling_code >= (last_saved_code + MAX_CODES_WITHOUT_FLASH_WRITE))
     {
         save_rolling_code();
     }
@@ -1072,7 +1089,10 @@ bool transmitSec2(PacketAction &pkt_ac)
 
         if (pkt_ac.inc_counter)
         {
-            rolling_code = (rolling_code + 1) & 0xfffffff;
+            // Protect rolling code increment from concurrent access
+            if (!rolling_code_operation_in_progress) {
+                rolling_code = (rolling_code + 1) & 0xfffffff;
+            }
         }
     }
 

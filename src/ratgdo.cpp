@@ -294,8 +294,14 @@ void obstruction_timer()
     const long PULSES_LOWER_LIMIT = 3;
     if (current_millis - last_millis > CHECK_PERIOD)
     {
+        // Atomically read and reset the pulse count to prevent race with ISR
+        noInterrupts();
+        unsigned int pulse_count = obstruction_sensor.low_count;
+        obstruction_sensor.low_count = 0;
+        interrupts();
+        
         // check to see if we got more then PULSES_LOWER_LIMIT pulses
-        if (obstruction_sensor.low_count > PULSES_LOWER_LIMIT)
+        if (pulse_count > PULSES_LOWER_LIMIT)
         {
             // We're getting pulses, so pin detection is working
             last_pulse_time = current_millis;
@@ -318,7 +324,7 @@ void obstruction_timer()
                 }
             }
         }
-        else if (obstruction_sensor.low_count == 0)
+        else if (pulse_count == 0)
         {
             // if there have been no pulses the line is steady high or low
             if (!digitalRead(INPUT_OBST_PIN))
@@ -349,7 +355,6 @@ void obstruction_timer()
         }
 
         last_millis = current_millis;
-        obstruction_sensor.low_count = 0;
         
         // Check if we haven't seen pulses for the timeout period
         if (pulse_detection_started && (current_millis - last_pulse_time > NO_PULSE_TIMEOUT)) {

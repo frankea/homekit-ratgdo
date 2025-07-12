@@ -90,7 +90,7 @@ void unregisterRequest() {
     for (int i = 0; i < MAX_CONCURRENT_REQUESTS; i++) {
         if (activeRequests[i].inUse && activeRequests[i].clientIP == clientIP) {
             activeRequests[i].inUse = false;
-            activeRequestCount--;
+            if (activeRequestCount > 0) activeRequestCount--; // Prevent negative count
             break;
         }
     }
@@ -256,13 +256,9 @@ SSESubscription *firmwareUpdateSub = NULL;
 
 uint8_t subscriptionCount = 0;
 
-// Performance management
-#define MAX_CONCURRENT_CONNECTIONS 3
-#define REQUEST_TIMEOUT_MS 5000
+// Performance management - removed redundant connection tracking
 #define MIN_REQUEST_INTERVAL_MS 100
 static unsigned long last_request_time = 0;
-static uint8_t active_connections = 0;
-static unsigned long connection_start_time = 0;
 
 // JSON response caching
 #define JSON_BUFFER_SIZE 1280
@@ -272,6 +268,9 @@ static char *cached_json = NULL;
 static unsigned long json_cache_time = 0;
 static bool json_cache_valid = false;
 size_t json_offset = 0;
+
+// SSE heartbeat JSON buffer to prevent race conditions
+char *sse_json = NULL;
 
 // Function to invalidate JSON cache when state changes
 void invalidate_json_cache() {
@@ -433,55 +432,16 @@ void web_loop()
         return;
     }
     
-    // Connection throttling and timeout management
+    // Rate limiting - minimum interval between requests
     unsigned long current_time = millis();
-    
-    // Check if we have a client connection
-    WiFiClient client = server.client();
-    if (client) {
-        if (connection_start_time == 0) {
-            connection_start_time = current_time;
-            active_connections++;
-        }
-        
-        // Check for connection timeout
-        if (current_time - connection_start_time > REQUEST_TIMEOUT_MS) {
-            dropped_connections++;
-            RINFO("Connection timeout, dropping client %s (total dropped: %lu)", client.remoteIP().toString().c_str(), dropped_connections);
-            client.stop();
-            connection_start_time = 0;
-            if (active_connections > 0) active_connections--;
-            return;
-        }
-        
-        // Check concurrent connection limit
-        if (active_connections > MAX_CONCURRENT_CONNECTIONS) {
-            dropped_connections++;
-            RINFO("Too many concurrent connections (%d), dropping client %s (total dropped: %lu)", active_connections, client.remoteIP().toString().c_str(), dropped_connections);
-            client.stop();
-            connection_start_time = 0;
-            if (active_connections > 0) active_connections--;
-            return;
-        }
-        
-        // Rate limiting - minimum interval between requests
-        if (current_time - last_request_time < MIN_REQUEST_INTERVAL_MS) {
-            return; // Skip this cycle to enforce rate limit
-        }
-    } else {
-        // No client connected, reset connection tracking
-        if (connection_start_time != 0) {
-            connection_start_time = 0;
-            if (active_connections > 0) active_connections--;
-        }
+    if (current_time - last_request_time < MIN_REQUEST_INTERVAL_MS) {
+        return; // Skip this cycle to enforce rate limit
     }
     
     server.handleClient();
     
-    // Update last request time when we actually handle a request
-    if (client && client.connected()) {
-        last_request_time = current_time;
-    }
+    // Update last request time after handling client
+    last_request_time = current_time;
 }
 
 void setup_web()
@@ -490,7 +450,21 @@ void setup_web()
     
     // Allocate JSON buffer from regular heap instead of IRAM to save IRAM space
     json = (char *)malloc(JSON_BUFFER_SIZE);
+    if (!json) {
+        RERROR("Failed to allocate JSON buffer, size: %d", JSON_BUFFER_SIZE);
+        sync_and_restart();
+        return;
+    }
     RINFO("Allocated buffer for JSON, size: %d", JSON_BUFFER_SIZE);
+    
+    // Allocate separate JSON buffer for SSE heartbeat to prevent race conditions
+    sse_json = (char *)malloc(JSON_BUFFER_SIZE);
+    if (!sse_json) {
+        RERROR("Failed to allocate SSE JSON buffer, size: %d", JSON_BUFFER_SIZE);
+        sync_and_restart();
+        return;
+    }
+    RINFO("Allocated SSE JSON buffer, size: %d", JSON_BUFFER_SIZE);
     
     IRAM_START
     // IRAM heap is used only for allocating critical globals during initialization.
@@ -877,6 +851,9 @@ void handle_status()
     // Cache the JSON response for performance
     if (cached_json == NULL) {
         cached_json = (char*)malloc(JSON_BUFFER_SIZE);
+        if (!cached_json) {
+            RINFO("Failed to allocate cached JSON buffer, caching disabled");
+        }
     }
     if (cached_json != NULL) {
         strncpy(cached_json, json, JSON_BUFFER_SIZE - 1);
@@ -954,14 +931,32 @@ void handle_setgdo()
                 // JSON string of passed in.
                 // Very basic parsing, not using library functions to save memory
                 // find the colon after the key string
-                newUsername = strchr(newUsername, ':') + 1;
-                newCredentials = strchr(newCredentials, ':') + 1;
+                char *colon = strchr(newUsername, ':');
+                if (!colon) { error = true; continue; }
+                newUsername = colon + 1;
+                
+                colon = strchr(newCredentials, ':');
+                if (!colon) { error = true; continue; }
+                newCredentials = colon + 1;
+                
                 // for strings find the double quote
-                newUsername = strchr(newUsername, '"') + 1;
-                newCredentials = strchr(newCredentials, '"') + 1;
+                char *quote = strchr(newUsername, '"');
+                if (!quote) { error = true; continue; }
+                newUsername = quote + 1;
+                
+                quote = strchr(newCredentials, '"');
+                if (!quote) { error = true; continue; }
+                newCredentials = quote + 1;
+                
                 // null terminate the strings (at closing quote).
-                *strchr(newUsername, '"') = (char)0;
-                *strchr(newCredentials, '"') = (char)0;
+                char *endQuote = strchr(newUsername, '"');
+                if (!endQuote) { error = true; continue; }
+                *endQuote = (char)0;
+                
+                endQuote = strchr(newCredentials, '"');
+                if (!endQuote) { error = true; continue; }
+                *endQuote = (char)0;
+                
                 // save values...
                 strlcpy(userConfig->wwwUsername, newUsername, sizeof(userConfig->wwwUsername));
                 strlcpy(userConfig->wwwCredentials, newCredentials, sizeof(userConfig->wwwCredentials));
@@ -1223,11 +1218,12 @@ void SSEheartbeat(SSESubscription *s)
         {
             // 5 heartbeats have failed... assume client will not connect
             // and free up the slot
-            subscriptionCount--;
+            if (subscriptionCount > 0) subscriptionCount--; // Prevent negative count
             RINFO("Client %s timeout waiting to listen, remove SSE subscription.  Total subscribed: %d", s->clientIP.toString().c_str(), subscriptionCount);
             s->heartbeatTimer.detach();
             s->clientIP = INADDR_NONE;
             s->clientUUID.clear();
+            s->SSEconnected = false;
             // no need to stop client socket because it is not live yet.
         }
         else
@@ -1242,29 +1238,32 @@ void SSEheartbeat(SSESubscription *s)
         static int8_t lastRSSI = 0;
         static int lastClientCount = 0;
 
-        START_JSON(json);
-        ADD_LONG(json, "upTime", millis());
-        ADD_INT(json, "freeHeap", free_heap);
-        ADD_INT(json, "minHeap", min_heap);
-        ADD_INT(json, "minStack", ESP.getFreeContStack());
-        ADD_BOOL(json, "checkFlashCRC", flashCRC);
+        // Use separate SSE JSON buffer to prevent race conditions
+        if (!sse_json) return; // Safety check
+        
+        START_JSON(sse_json);
+        ADD_LONG(sse_json, "upTime", millis());
+        ADD_INT(sse_json, "freeHeap", free_heap);
+        ADD_INT(sse_json, "minHeap", min_heap);
+        ADD_INT(sse_json, "minStack", ESP.getFreeContStack());
+        ADD_BOOL(sse_json, "checkFlashCRC", flashCRC);
         if (lastRSSI != WiFi.RSSI())
         {
             lastRSSI = WiFi.RSSI();
-            ADD_STR(json, "wifiRSSI", (std::to_string(lastRSSI) + " dBm, Channel " + std::to_string(WiFi.channel())).c_str());
+            ADD_STR(sse_json, "wifiRSSI", (std::to_string(lastRSSI) + " dBm, Channel " + std::to_string(WiFi.channel())).c_str());
         }
         if (arduino_homekit_get_running_server() && arduino_homekit_get_running_server()->nfds != lastClientCount)
         {
             lastClientCount = arduino_homekit_get_running_server()->nfds;
-            ADD_INT(json, "clients", lastClientCount);
+            ADD_INT(sse_json, "clients", lastClientCount);
         }
-        END_JSON(json);
-        REMOVE_NL(json);
-        s->client.printf("event: message\nretry: 15000\ndata: %s\n\n", json);
+        END_JSON(sse_json);
+        REMOVE_NL(sse_json);
+        s->client.printf("event: message\nretry: 15000\ndata: %s\n\n", sse_json);
     }
     else
     {
-        subscriptionCount--;
+        if (subscriptionCount > 0) subscriptionCount--; // Prevent negative count
         RINFO("Client %s not listening, remove SSE subscription. Total subscribed: %d", s->clientIP.toString().c_str(), subscriptionCount);
         s->heartbeatTimer.detach();
         s->client.flush();
@@ -1350,10 +1349,12 @@ void handle_subscribe()
     }
 
     // check if we already have a subscription for this UUID
+    bool foundExisting = false;
     for (channel = 0; channel < SSE_MAX_CHANNELS; channel++)
     {
         if (subscription[channel].clientUUID == server.arg(id))
         {
+            foundExisting = true;
             if (subscription[channel].SSEconnected)
             {
                 // Already connected.  We need to close it down as client will be reconnecting
@@ -1361,6 +1362,7 @@ void handle_subscribe()
                 subscription[channel].heartbeatTimer.detach();
                 subscription[channel].client.flush();
                 subscription[channel].client.stop();
+                subscription[channel].SSEconnected = false;
             }
             else
             {
@@ -1371,13 +1373,16 @@ void handle_subscribe()
         }
     }
 
-    if (channel == SSE_MAX_CHANNELS)
+    if (!foundExisting)
     {
-        // ended loop above without finding a match, so need to allocate a free slot
-        ++subscriptionCount;
+        // Need to allocate a new slot
         for (channel = 0; channel < SSE_MAX_CHANNELS; channel++)
             if (!subscription[channel].clientIP)
                 break;
+        
+        if (channel < SSE_MAX_CHANNELS) {
+            subscriptionCount++;
+        }
     }
     
     // Check if we found a free slot
@@ -1387,7 +1392,23 @@ void handle_subscribe()
         return;
     }
     
-    subscription[channel] = {clientIP, server.client(), Ticker(), false, 0, server.arg(id), logViewer};
+    // Validate client before assignment
+    WiFiClient client = server.client();
+    if (!client || !client.connected()) {
+        RINFO("Invalid client for SSE subscription");
+        server.send(400, "text/plain", "Invalid client connection");
+        return;
+    }
+    
+    // Safe assignment with validation
+    subscription[channel].clientIP = clientIP;
+    subscription[channel].client = client;
+    subscription[channel].heartbeatTimer = Ticker();
+    subscription[channel].SSEconnected = false;
+    subscription[channel].SSEfailCount = 0;
+    subscription[channel].clientUUID = server.arg(id);
+    subscription[channel].logViewer = logViewer;
+    
     SSEurl += channel;
     RINFO("SSE Subscription for client %s with IP %s: event bus location: %s, Total subscribed: %d", server.arg(id).c_str(), clientIP.toString().c_str(), SSEurl.c_str(), subscriptionCount);
     server.sendHeader(F("Cache-Control"), F("no-cache, no-store"));

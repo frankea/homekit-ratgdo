@@ -43,6 +43,9 @@ const char www_realm[] = "RATGDO Login Required";
 const char userConfigFile[] = "user_config";
 userConfig_t *userConfig = NULL;
 
+// Mutex to prevent concurrent config file writes
+static bool config_write_in_progress = false;
+
 // Controls whether to log to syslog server
 bool syslogEn = false;
 
@@ -164,6 +167,11 @@ void load_all_config_settings()
         // to exceed available IRAM.  We can adjust the LOG_BUFFER_SIZE (in log.h) if we
         // need to make more space available for initialization.
         userConfig = (userConfig_t *)malloc(sizeof(userConfig_t));
+        if (!userConfig) {
+            Serial.println("FATAL: Failed to allocate userConfig memory");
+            ESP.restart();
+            return;
+        }
         IRAM_END("User config buffer allocated");
     }
     // Initialize with defaults.
@@ -379,8 +387,24 @@ void delete_file(const char *filename)
 
 void write_config_to_file()
 {
+    // Prevent concurrent config writes (race condition between WiFi callbacks and main loop)
+    if (config_write_in_progress) {
+        RINFO("Config write already in progress, skipping");
+        return;
+    }
+    config_write_in_progress = true;
+    
     RINFO("Writing user configuration to file: %s", userConfigFile);
-    File file = LittleFS.open(userConfigFile, "w");
+    
+    // Atomic write: write to temp file first, then rename
+    String tempFile = String(userConfigFile) + ".tmp";
+    File file = LittleFS.open(tempFile.c_str(), "w");
+    if (!file) {
+        RERROR("Failed to open temp config file for writing: %s", tempFile.c_str());
+        config_write_in_progress = false;
+        return;
+    }
+    
     file.printf_P(PSTR("deviceName,,%s\n"), userConfig->deviceName);
     file.printf_P(PSTR("wifiSettingsChanged,,%s\n"), userConfig->wifiSettingsChanged ? "true" : "false");
     file.printf_P(PSTR("wifiPower,,%d\n"), userConfig->wifiPower);
@@ -408,6 +432,20 @@ void write_config_to_file()
     file.printf_P(PSTR("syslogIP,,%s\n"), userConfig->syslogIP);
     file.printf_P(PSTR("syslogPort,,%d\n"), userConfig->syslogPort);
     file.close();
+    
+    // Atomic operation: rename temp file to final file
+    if (LittleFS.exists(userConfigFile)) {
+        LittleFS.remove(userConfigFile);
+    }
+    if (!LittleFS.rename(tempFile.c_str(), userConfigFile)) {
+        RERROR("Failed to rename temp config file to final: %s -> %s", tempFile.c_str(), userConfigFile);
+        LittleFS.remove(tempFile.c_str()); // Clean up temp file
+        config_write_in_progress = false;
+        return;
+    }
+    
+    RINFO("Config file written atomically");
+    config_write_in_progress = false;
 }
 
 bool read_config_from_file()
@@ -421,8 +459,16 @@ bool read_config_from_file()
         String line = file.readStringUntil('\n');
         const char *key = line.c_str();
         char *type = strchr(key, ',');
+        if (!type) {
+            RINFO("Malformed config line, skipping: %s", key);
+            continue;
+        }
         *type++ = 0;
         char *value = strchr(type, ',');
+        if (!value) {
+            RINFO("Malformed config line, missing value: %s", key);
+            continue;
+        }
         *value++ = 0;
 
         if (!userConfig)
