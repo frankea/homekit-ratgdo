@@ -68,6 +68,9 @@ struct obstruction_sensor_t
     unsigned long last_asleep = 0; // count time between high pulses from the obst ISR
 } obstruction_sensor;
 
+// Track whether obstruction sensor has been detected
+bool obstruction_sensor_detected = false;
+
 // long unsigned int led_reset_time = 0; // Stores time when LED should return to idle state
 // uint8_t led_active_state = LOW;       // LOW == LED on, HIGH == LED off
 // uint8_t led_idle_state = HIGH;        // opposite of active
@@ -268,6 +271,7 @@ void obstruction_timer()
 {
     unsigned long current_millis = millis();
     static unsigned long last_millis = 0;
+    static unsigned long last_asleep = 0;
 
     // the obstruction sensor has 3 states: clear (HIGH with LOW pulse every 7ms), obstructed (HIGH), asleep (LOW)
     // the transitions between awake and asleep are tricky because the voltage drops slowly when falling asleep
@@ -277,16 +281,19 @@ void obstruction_timer()
 
     const long CHECK_PERIOD = 50;
     const long PULSES_LOWER_LIMIT = 3;
+
     if (current_millis - last_millis > CHECK_PERIOD)
     {
-        // check to see if we got more then PULSES_LOWER_LIMIT pulses
+        // check to see if we got more than PULSES_LOWER_LIMIT pulses (removed upper limit per PR #41)
         if (obstruction_sensor.low_count > PULSES_LOWER_LIMIT)
         {
+            garage_door.obstructed = false;
+            obstruction_sensor_detected = true; // Mark sensor as detected
+            
             // Only update if we are changing state
-            if (garage_door.obstructed)
+            if (garage_door.obstructed != false)
             {
                 RINFO("Obstruction Clear");
-                garage_door.obstructed = false;
                 notify_homekit_obstruction();
                 digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
                 if (motionTriggers.bit.obstruction)
@@ -302,12 +309,12 @@ void obstruction_timer()
             if (!digitalRead(INPUT_OBST_PIN))
             {
                 // asleep
-                obstruction_sensor.last_asleep = current_millis;
+                last_asleep = current_millis;
             }
             else
             {
                 // if the line is high and was last asleep more than 700ms ago, then there is an obstruction present
-                if (current_millis - obstruction_sensor.last_asleep > 700)
+                if (current_millis - last_asleep > 700)
                 {
                     // Only update if we are changing state
                     if (!garage_door.obstructed)

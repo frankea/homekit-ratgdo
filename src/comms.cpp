@@ -30,6 +30,7 @@ SoftwareSerial sw_serial;
 
 extern struct GarageDoor garage_door;
 extern bool status_done;
+extern bool obstruction_sensor_detected;
 
 // For Time-to-close control
 Ticker TTCtimer = Ticker();
@@ -765,6 +766,20 @@ void comms_loop_sec2()
                     notify_homekit_current_lock();
                 }
 
+                // Handle packet-based obstruction detection when no pin-based sensor is detected
+                if (!obstruction_sensor_detected && pkt.m_data.value.status.obstruction != garage_door.obstructed)
+                {
+                    RINFO("Obstruction Status from packet: %s", pkt.m_data.value.status.obstruction ? "Obstructed" : "Clear");
+                    garage_door.obstructed = pkt.m_data.value.status.obstruction;
+                    notify_homekit_obstruction();
+                    digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
+                    if (motionTriggers.bit.obstruction)
+                    {
+                        garage_door.motion = garage_door.obstructed;
+                        notify_homekit_motion();
+                    }
+                }
+
                 status_done = true;
                 break;
             }
@@ -1210,7 +1225,15 @@ void door_command(DoorAction action)
 }
 void door_command_close()
 {
-    door_command(DoorAction::Close);
+    // Use toggle command if no obstruction sensor detected, otherwise use close command
+    if (obstruction_sensor_detected)
+    {
+        door_command(DoorAction::Close);
+    }
+    else
+    {
+        door_command(DoorAction::Toggle);
+    }
 }
 
 void open_door()
@@ -1282,7 +1305,15 @@ void close_door()
 
     if (userConfig->TTCdelay == 0)
     {
-        door_command(DoorAction::Close);
+        // Use toggle command if no obstruction sensor detected, otherwise use close command
+        if (obstruction_sensor_detected)
+        {
+            door_command(DoorAction::Close);
+        }
+        else
+        {
+            door_command(DoorAction::Toggle);
+        }
     }
     else
     {
@@ -1293,7 +1324,15 @@ void close_door()
             RINFO("Canceling time-to-close delay timer");
             TTCtimer.detach();
             TTCcountdown = 0;
-            door_command(DoorAction::Close);
+            // Use toggle command if no obstruction sensor detected, otherwise use close command
+            if (obstruction_sensor_detected)
+            {
+                door_command(DoorAction::Close);
+            }
+            else
+            {
+                door_command(DoorAction::Toggle);
+            }
         }
         else
         {
